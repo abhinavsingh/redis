@@ -280,6 +280,18 @@ void subscribeCommand(redisClient *c) {
     for (j = 1; j < c->argc; j++)
         pubsubSubscribeChannel(c,c->argv[j]);
     c->flags |= REDIS_PUBSUB;
+
+    /* Send last received message on the subscribed channel(s) */
+    robj *o;
+    for (j = 1; j < c->argc; j++) {
+    	o = lookupKeyRead(c->db, c->argv[j]);
+    	if(o != NULL) {
+			addReply(c,shared.mbulkhdr[3]);
+			addReply(c,shared.messagebulk);
+			addReplyBulk(c,c->argv[j]);
+			addReplyBulk(c,o);
+    	}
+    }
 }
 
 void unsubscribeCommand(redisClient *c) {
@@ -300,6 +312,32 @@ void psubscribeCommand(redisClient *c) {
     for (j = 1; j < c->argc; j++)
         pubsubSubscribePattern(c,c->argv[j]);
     c->flags |= REDIS_PUBSUB;
+
+    /* Send last received message on the channel(s) matching subscribed patterns */
+    for (j = 1; j < c->argc; j++) {
+    	robj *pat = c->argv[j];
+    	dictIterator *di = dictGetIterator(server.pubsub_channels);
+    	dictEntry *de;
+    	while((de = dictNext(di)) != NULL) {
+			robj *cobj = dictGetKey(de);
+			sds channel = cobj->ptr;
+			if (stringmatchlen((char*)pat->ptr,
+								sdslen(pat->ptr),
+								(char*)channel,
+								sdslen(channel), 0))
+			{
+				robj *o = lookupKeyRead(c->db, cobj);
+				if(o != NULL) {
+	                addReply(c,shared.mbulkhdr[4]);
+	                addReply(c,shared.pmessagebulk);
+	                addReplyBulk(c,pat);
+	                addReplyBulk(c,cobj);
+	                addReplyBulk(c,o);
+				}
+			}
+		}
+		dictReleaseIterator(di);
+    }
 }
 
 void punsubscribeCommand(redisClient *c) {
@@ -320,6 +358,10 @@ void publishCommand(redisClient *c) {
         clusterPropagatePublish(c->argv[1],c->argv[2]);
     else
         forceCommandPropagation(c,REDIS_PROPAGATE_REPL);
+
+    /* Persist last published message in channel specific key */
+    setKey(c->db, c->argv[1], c->argv[2]);
+
     addReplyLongLong(c,receivers);
 }
 
